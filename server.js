@@ -23,34 +23,52 @@ await connect();
 console.log('✅ Connected to MongoDB');
 
 app.get('/stream', async (req, res) => {
+  const { researchId = 'default' } = req.query;
+  
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  res.write(`data: {"type": "connected", "message": "Stream connected"}\n\n`);
+  res.write(`data: {"type": "connected", "message": "Stream connected", "researchId": "${researchId}"}\n\n`);
 
   try {
     // First, stream all historical messages from MongoDB
     const messagesCollection = getMessagesCollection();
     
-    // Get all messages from test-topic
+    // Get all messages from specified research session
     const historicalMessages = await messagesCollection
-      .find({ topic: 'test-topic' })
+      .find({ researchId: researchId })
       .sort({ timestamp: 1 })
       .toArray();
 
     // Stream historical messages
     for (const msg of historicalMessages) {
       res.write(`data: ${JSON.stringify({ ...msg, type: 'historical' })}\n\n`);
+      
+      // Check if any historical message is "end" to close the connection
+      if (msg.text && msg.text.toLowerCase() === 'end') {
+        res.write(`data: {"type": "connection_ended", "message": "Stream ended by end command in history"}\n\n`);
+        res.end();
+        return;
+      }
     }
 
     res.write(`data: {"type": "historical_complete", "message": "All historical messages sent"}\n\n`);
 
     // Now listen for new real-time messages
     const handler = (msg) => {
-      if (msg.topic === 'test-topic') {
+      if (msg.researchId === researchId) {
         res.write(`data: ${JSON.stringify({ ...msg, type: 'live' })}\n\n`);
+        
+        // Check if the message text is "end" to close the connection
+        console.log(`Received message: ${msg.text}`);
+        if (msg.text && msg.text.toLowerCase() === 'end') {
+          res.write(`data: {"type": "connection_ended", "message": "Stream ended by end command"}\n\n`);
+          kafkaEmitter.removeListener('message', handler);
+          res.end();
+          return;
+        }
       }
     };
 
@@ -74,18 +92,18 @@ const kafka = new Kafka({
   brokers: ['localhost:9092'],
 });
 
-const topic = 'test-topic';
+const topic = 'research-stream';
 const consumer = kafka.consumer({ groupId: 'hybrid-stream-group' });
 const producer = kafka.producer();
 
 // Test endpoint to send messages to Kafka
 app.post('/send-message', async (req, res) => {
   try {
-    const { message, userId } = req.body;
+    const { message, researchId = 'default' } = req.body;
     
     const payload = {
       text: message,
-      userId: userId || 'anonymous',
+      researchId: researchId,
       timestamp: new Date(),
       id: Date.now().toString()
     };
@@ -109,16 +127,16 @@ app.post('/send-message', async (req, res) => {
 // Get message history endpoint
 app.get('/messages', async (req, res) => {
   try {
-    const { limit = 50 } = req.query;
+    const { limit = 50, researchId = 'default' } = req.query;
 
     const messagesCollection = getMessagesCollection();
     const messages = await messagesCollection
-      .find({ topic: 'test-topic' })
+      .find({ researchId: researchId })
       .sort({ timestamp: -1 })
       .limit(parseInt(limit))
       .toArray();
 
-    res.json({ success: true, messages: messages.reverse() });
+    res.json({ success: true, messages: messages.reverse(), researchId });
   } catch (error) {
     console.error('Error fetching messages:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -132,7 +150,7 @@ async function startKafkaConsumer() {
     
     await consumer.connect();
     await consumer.subscribe({ topic, fromBeginning: false });
-    console.log('✅ Kafka consumer connected and subscribed');
+    console.log('✅ Kafka consumer connected and subscribed to research-stream');
 
     await consumer.run({
       eachMessage: async ({ topic, partition, message }) => {

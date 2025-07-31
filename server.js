@@ -33,7 +33,6 @@ app.get('/stream', async (req, res) => {
   
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Transfer-Encoding', 'chunked');
   res.flushHeaders();
 
   try {

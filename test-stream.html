@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kafka Stream Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        label {
+            display: inline-block;
+            width: 120px;
+            font-weight: bold;
+        }
+        input {
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 200px;
+        }
+        #messages {
+            background-color: #000;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 4px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Kafka Stream Test Client</h1>
+        
+        <div class="controls">
+            <h3>Stream Controls</h3>
+            <div class="input-group">
+                <label>Research ID:</label>
+                <input type="text" id="researchId" value="default" placeholder="Enter research ID">
+            </div>
+            <button id="startStream">Start Stream</button>
+            <button id="stopStream" disabled>Stop Stream</button>
+            <button id="clearMessages">Clear Messages</button>
+        </div>
+
+        <div class="controls">
+            <h3>Send Message</h3>
+            <div class="input-group">
+                <label>Message:</label>
+                <input type="text" id="messageInput" placeholder="Enter message to send">
+            </div>
+            <button id="sendMessage">Send Message</button>
+            <button id="sendEndMessage">Send "end" Message</button>
+        </div>
+
+        <div id="status" class="status disconnected">Disconnected</div>
+
+        <h3>Stream Messages:</h3>
+        <div id="messages"></div>
+    </div>
+
+    <script>
+        let reader = null;
+        let controller = null;
+        let isStreaming = false;
+
+        const statusDiv = document.getElementById('status');
+        const messagesDiv = document.getElementById('messages');
+        const startBtn = document.getElementById('startStream');
+        const stopBtn = document.getElementById('stopStream');
+        const clearBtn = document.getElementById('clearMessages');
+        const sendBtn = document.getElementById('sendMessage');
+        const sendEndBtn = document.getElementById('sendEndMessage');
+        const researchIdInput = document.getElementById('researchId');
+        const messageInput = document.getElementById('messageInput');
+
+        function updateStatus(status, message) {
+            statusDiv.className = `status ${status}`;
+            statusDiv.textContent = message;
+        }
+
+        function addMessage(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            messagesDiv.textContent += `[${timestamp}] ${message}\n`;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function startStream() {
+            if (isStreaming) return;
+
+            const researchId = researchIdInput.value || 'default';
+            
+            try {
+                updateStatus('connecting', 'Connecting to stream...');
+                
+                const response = await fetch(`/stream?researchId=${encodeURIComponent(researchId)}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                updateStatus('connected', `Connected to stream (Research ID: ${researchId})`);
+                isStreaming = true;
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+
+                reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (isStreaming) {
+                    const { done, value } = await reader.read();
+                    
+                    if (done) {
+                        addMessage('Stream ended by server');
+                        break;
+                    }
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            addMessage(line.trim());
+                        }
+                    }
+                }
+            } catch (error) {
+                addMessage(`Error: ${error.message}`);
+                updateStatus('disconnected', `Error: ${error.message}`);
+            } finally {
+                stopStream();
+            }
+        }
+
+        function stopStream() {
+            if (!isStreaming) return;
+
+            isStreaming = false;
+            
+            if (reader) {
+                reader.cancel();
+                reader = null;
+            }
+
+            updateStatus('disconnected', 'Disconnected');
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+
+        async function sendMessage(messageText) {
+            const researchId = researchIdInput.value || 'default';
+            
+            try {
+                const response = await fetch('/send-message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: messageText,
+                        researchId: researchId
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    addMessage(`✓ Sent: ${messageText}`);
+                } else {
+                    addMessage(`✗ Failed to send: ${result.error}`);
+                }
+            } catch (error) {
+                addMessage(`✗ Send error: ${error.message}`);
+            }
+        }
+
+        // Event listeners
+        startBtn.addEventListener('click', startStream);
+        stopBtn.addEventListener('click', stopStream);
+        clearBtn.addEventListener('click', () => {
+            messagesDiv.textContent = '';
+        });
+
+        sendBtn.addEventListener('click', () => {
+            const message = messageInput.value.trim();
+            if (message) {
+                sendMessage(message);
+                messageInput.value = '';
+            }
+        });
+
+        sendEndBtn.addEventListener('click', () => {
+            sendMessage('end');
+        });
+
+        // Allow Enter key to send messages
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendBtn.click();
+            }
+        });
+
+        // Allow Enter key to start stream from research ID input
+        researchIdInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !isStreaming) {
+                startBtn.click();
+            }
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopStream();
+        });
+    </script>
+</body>
+</html>

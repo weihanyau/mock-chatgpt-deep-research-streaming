@@ -14,6 +14,7 @@ const PORT = 3000;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static('.'));
 
 const kafkaEmitter = new EventEmitter();
 kafkaEmitter.setMaxListeners(0);
@@ -22,15 +23,18 @@ kafkaEmitter.setMaxListeners(0);
 await connect();
 console.log('✅ Connected to MongoDB');
 
+// Serve the test HTML page
+app.get('/', (req, res) => {
+  res.sendFile('test-stream.html', { root: __dirname });
+});
+
 app.get('/stream', async (req, res) => {
   const { researchId = 'default' } = req.query;
   
-  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Transfer-Encoding', 'chunked');
   res.flushHeaders();
-
-  res.write(`data: {"type": "connected", "message": "Stream connected", "researchId": "${researchId}"}\n\n`);
 
   try {
     // First, stream all historical messages from MongoDB
@@ -44,27 +48,28 @@ app.get('/stream', async (req, res) => {
 
     // Stream historical messages
     for (const msg of historicalMessages) {
-      res.write(`data: ${JSON.stringify({ ...msg, type: 'historical' })}\n\n`);
-      
-      // Check if any historical message is "end" to close the connection
-      if (msg.text && msg.text.toLowerCase() === 'end') {
-        res.write(`data: {"type": "connection_ended", "message": "Stream ended by end command in history"}\n\n`);
-        res.end();
-        return;
+      if (msg.text) {
+        res.write(msg.text + '\n');
+        res.flush && res.flush(); // Force flush if available
+        console.log(msg.text)
+        
+        // Check if any historical message is "end" to close the connection
+        if (msg.text.toLowerCase() === 'end') {
+          res.end();
+          return;
+        }
       }
     }
 
-    res.write(`data: {"type": "historical_complete", "message": "All historical messages sent"}\n\n`);
-
     // Now listen for new real-time messages
     const handler = (msg) => {
-      if (msg.researchId === researchId) {
-        res.write(`data: ${JSON.stringify({ ...msg, type: 'live' })}\n\n`);
+      if (msg.researchId === researchId && msg.text) {
+        res.write(msg.text + '\n');
+        res.flush && res.flush(); // Force flush if available
         
         // Check if the message text is "end" to close the connection
         console.log(`Received message: ${msg.text}`);
-        if (msg.text && msg.text.toLowerCase() === 'end') {
-          res.write(`data: {"type": "connection_ended", "message": "Stream ended by end command"}\n\n`);
+        if (msg.text.toLowerCase() === 'end') {
           kafkaEmitter.removeListener('message', handler);
           res.end();
           return;
@@ -81,7 +86,7 @@ app.get('/stream', async (req, res) => {
 
   } catch (error) {
     console.error('Error streaming messages:', error);
-    res.write(`data: {"type": "error", "message": "Error retrieving messages"}\n\n`);
+    res.write('Error retrieving messages\n');
     res.end();
   }
 });
@@ -147,7 +152,7 @@ async function startKafkaConsumer() {
   try {
     await producer.connect();
     console.log('✅ Kafka producer connected');
-    
+ 
     await consumer.connect();
     await consumer.subscribe({ topic, fromBeginning: false });
     console.log('✅ Kafka consumer connected and subscribed to research-stream');

@@ -131,4 +131,4 @@ Each research context is identified by a `researchId` parameter - **no server-si
 - Messages are isolated by research context using the identifier in each request
 - Historical data is replayed when starting a new stream (stateless retrieval)
 - Multiple clients can connect to the same research context independently
-- Send "end" message to terminate a stream (client-controlled, not server state)
+- Send "end" message to terminate a stream
